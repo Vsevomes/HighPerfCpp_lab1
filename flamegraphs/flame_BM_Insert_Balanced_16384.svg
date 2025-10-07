@@ -1,0 +1,914 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="502" onload="init(evt)" viewBox="0 0 1200 502" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="502.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >BM_Insert_Balanced_16384</text>
+<text id="details" x="10.00" y="485" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="485" > </text>
+<g id="frames">
+<g >
+<title>std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt;::do_put (12,053,603 samples, 0.81%)</title><rect x="934.7" y="373" width="9.6" height="15.0" fill="rgb(243,175,41)" rx="2" ry="2" />
+<text  x="937.73" y="383.5" ></text>
+</g>
+<g >
+<title>AVLMap::rebalance (25,486,874 samples, 1.71%)</title><rect x="551.4" y="229" width="20.3" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="554.44" y="239.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (25,157,006 samples, 1.69%)</title><rect x="1050.1" y="421" width="20.0" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="1053.12" y="431.5" ></text>
+</g>
+<g >
+<title>do_user_addr_fault (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="373" width="8.8" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="1173.80" y="383.5" ></text>
+</g>
+<g >
+<title>std::basic_streambuf&lt;char, std::char_traits&lt;char&gt; &gt;::xsputn (12,051,333 samples, 0.81%)</title><rect x="1151.7" y="421" width="9.5" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="1154.67" y="431.5" ></text>
+</g>
+<g >
+<title>do_anonymous_page (26,106,368 samples, 1.76%)</title><rect x="684.6" y="229" width="20.7" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="687.62" y="239.5" ></text>
+</g>
+<g >
+<title>AVLMap::rotateLeft (13,071,001 samples, 0.88%)</title><rect x="459.8" y="165" width="10.4" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="462.83" y="175.5" ></text>
+</g>
+<g >
+<title>std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; std::num_put&lt;char, std::ostreambuf_iterator&lt;char, std::char_traits&lt;char&gt; &gt; &gt;::_M_insert_int&lt;long long&gt; (24,147,742 samples, 1.62%)</title><rect x="1031.0" y="357" width="19.1" height="15.0" fill="rgb(213,40,9)" rx="2" ry="2" />
+<text  x="1033.96" y="367.5" ></text>
+</g>
+<g >
+<title>AVLMap::rebalance (39,216,139 samples, 2.64%)</title><rect x="520.3" y="213" width="31.1" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="523.32" y="223.5" >AV..</text>
+</g>
+<g >
+<title>[[vdso]] (92,970,023 samples, 6.25%)</title><rect x="831.4" y="341" width="73.8" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="834.44" y="351.5" >[[vdso]]</text>
+</g>
+<g >
+<title>alloc_anon_folio (26,106,368 samples, 1.76%)</title><rect x="684.6" y="213" width="20.7" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="687.62" y="223.5" ></text>
+</g>
+<g >
+<title>AVLMap::rebalance (13,910,317 samples, 0.94%)</title><rect x="644.1" y="293" width="11.0" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="647.06" y="303.5" ></text>
+</g>
+<g >
+<title>_dl_relocate_object (7,602,938 samples, 0.51%)</title><rect x="19.6" y="373" width="6.0" height="15.0" fill="rgb(231,120,28)" rx="2" ry="2" />
+<text  x="22.56" y="383.5" ></text>
+</g>
+<g >
+<title>AVLMap::rebalance (13,275,529 samples, 0.89%)</title><rect x="655.1" y="325" width="10.5" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="658.10" y="335.5" ></text>
+</g>
+<g >
+<title>get_page_from_freelist (26,106,368 samples, 1.76%)</title><rect x="684.6" y="149" width="20.7" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="687.62" y="159.5" ></text>
+</g>
+<g >
+<title>[unknown] (12,051,736 samples, 0.81%)</title><rect x="10.0" y="389" width="9.6" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="399.5" ></text>
+</g>
+<g >
+<title>_int_free (25,561,674 samples, 1.72%)</title><rect x="1070.1" y="421" width="20.3" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="1073.09" y="431.5" ></text>
+</g>
+<g >
+<title>std::basic_ostream&lt;char, std::char_traits&lt;char&gt; &gt;&amp; std::__ostream_insert&lt;char, std::char_traits&lt;char&gt; &gt; (12,044,960 samples, 0.81%)</title><rect x="714.9" y="341" width="9.6" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="717.91" y="351.5" ></text>
+</g>
+<g >
+<title>BM_Insert_Balanced (952,979,062 samples, 64.09%)</title><rect x="35.5" y="357" width="756.2" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="38.46" y="367.5" >BM_Insert_Balanced</text>
+</g>
+<g >
+<title>exc_page_fault (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="389" width="8.8" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="1173.80" y="399.5" ></text>
+</g>
+<g >
+<title>[[vdso]] (11,648,580 samples, 0.78%)</title><rect x="791.7" y="357" width="9.3" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="794.74" y="367.5" ></text>
+</g>
+<g >
+<title>_int_malloc (38,005,156 samples, 2.56%)</title><rect x="1090.4" y="421" width="30.1" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="1093.37" y="431.5" >_i..</text>
+</g>
+<g >
+<title>__rmqueue_pcplist (13,074,884 samples, 0.88%)</title><rect x="695.0" y="117" width="10.3" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="697.96" y="127.5" ></text>
+</g>
+<g >
+<title>AVLMap::rebalance (27,056,482 samples, 1.82%)</title><rect x="622.6" y="277" width="21.5" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="625.59" y="287.5" >A..</text>
+</g>
+<g >
+<title>__mod_memcg_state (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="181" width="8.8" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="1173.80" y="191.5" ></text>
+</g>
+<g >
+<title>AVLMap::rebalance (13,067,382 samples, 0.88%)</title><rect x="376.3" y="149" width="10.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="379.31" y="159.5" ></text>
+</g>
+<g >
+<title>std::ostream&amp; std::ostream::_M_insert&lt;long long&gt; (133,351,316 samples, 8.97%)</title><rect x="944.3" y="373" width="105.8" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="947.29" y="383.5" >std::ostream..</text>
+</g>
+<g >
+<title>__alloc_pages (26,106,368 samples, 1.76%)</title><rect x="684.6" y="165" width="20.7" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="687.62" y="175.5" ></text>
+</g>
+<g >
+<title>std::ostream::sentry::sentry (12,065,165 samples, 0.81%)</title><rect x="762.7" y="341" width="9.6" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="765.73" y="351.5" ></text>
+</g>
+<g >
+<title>alloc_pages (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="261" width="8.8" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="1173.80" y="271.5" ></text>
+</g>
+<g >
+<title>std::basic_streambuf&lt;char, std::char_traits&lt;char&gt; &gt;::xsputn (36,299,807 samples, 2.44%)</title><rect x="983.0" y="357" width="28.8" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="986.01" y="367.5" >st..</text>
+</g>
+<g >
+<title>alloc_pages_mpol (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="245" width="8.8" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="1173.80" y="255.5" ></text>
+</g>
+<g >
+<title>AVLMap::rotateRight (26,807,153 samples, 1.80%)</title><rect x="397.8" y="165" width="21.3" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="400.85" y="175.5" >A..</text>
+</g>
+<g >
+<title>AVLMap::rebalance (39,044,975 samples, 2.63%)</title><rect x="571.7" y="245" width="31.0" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="574.66" y="255.5" >AV..</text>
+</g>
+<g >
+<title>std::unique_ptr&lt;AVLNode, std::default_delete&lt;AVLNode&gt; &gt;::~unique_ptr (24,487,220 samples, 1.65%)</title><rect x="772.3" y="309" width="19.4" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="775.31" y="319.5" ></text>
+</g>
+<g >
+<title>housekeeping_cpumask (13,073,918 samples, 0.88%)</title><rect x="541.1" y="37" width="10.3" height="15.0" fill="rgb(252,217,52)" rx="2" ry="2" />
+<text  x="544.06" y="47.5" ></text>
+</g>
+<g >
+<title>AVLMap::rebalance (25,127,819 samples, 1.69%)</title><rect x="602.7" y="261" width="19.9" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="605.65" y="271.5" ></text>
+</g>
+<g >
+<title>scheduler_tick (13,073,918 samples, 0.88%)</title><rect x="541.1" y="69" width="10.3" height="15.0" fill="rgb(246,190,45)" rx="2" ry="2" />
+<text  x="544.06" y="79.5" ></text>
+</g>
+<g >
+<title>rmqueue_bulk (13,074,884 samples, 0.88%)</title><rect x="695.0" y="101" width="10.3" height="15.0" fill="rgb(235,138,33)" rx="2" ry="2" />
+<text  x="697.96" y="111.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (691,891,841 samples, 46.53%)</title><rect x="106.0" y="309" width="549.1" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="109.02" y="319.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (26,106,368 samples, 1.76%)</title><rect x="684.6" y="341" width="20.7" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="687.62" y="351.5" ></text>
+</g>
+<g >
+<title>__memmove_avx_unaligned_erms (13,880,330 samples, 0.93%)</title><rect x="419.1" y="165" width="11.0" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="422.12" y="175.5" ></text>
+</g>
+<g >
+<title>std::ostream::sentry::sentry (12,051,736 samples, 0.81%)</title><rect x="10.0" y="373" width="9.6" height="15.0" fill="rgb(251,214,51)" rx="2" ry="2" />
+<text  x="13.00" y="383.5" ></text>
+</g>
+<g >
+<title>benchmarks (1,486,899,364 samples, 100.00%)</title><rect x="10.0" y="437" width="1180.0" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="13.00" y="447.5" >benchmarks</text>
+</g>
+<g >
+<title>__memcg_kmem_charge_page (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="213" width="8.8" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1173.80" y="223.5" ></text>
+</g>
+<g >
+<title>_int_free (12,422,870 samples, 0.84%)</title><rect x="25.6" y="405" width="9.9" height="15.0" fill="rgb(247,196,46)" rx="2" ry="2" />
+<text  x="28.60" y="415.5" ></text>
+</g>
+<g >
+<title>asm_sysvec_apic_timer_interrupt (13,073,918 samples, 0.88%)</title><rect x="541.1" y="197" width="10.3" height="15.0" fill="rgb(232,127,30)" rx="2" ry="2" />
+<text  x="544.06" y="207.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (107,335,819 samples, 7.22%)</title><rect x="291.1" y="149" width="85.2" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="294.13" y="159.5" >AVLMap::in..</text>
+</g>
+<g >
+<title>clock_gettime@@GLIBC_2.17 (131,349,662 samples, 8.83%)</title><rect x="801.0" y="357" width="104.2" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="803.98" y="367.5" >clock_gettim..</text>
+</g>
+<g >
+<title>[unknown] (145,404,919 samples, 9.78%)</title><rect x="934.7" y="389" width="115.4" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="937.73" y="399.5" >[unknown]</text>
+</g>
+<g >
+<title>rmqueue (13,074,884 samples, 0.88%)</title><rect x="695.0" y="133" width="10.3" height="15.0" fill="rgb(226,98,23)" rx="2" ry="2" />
+<text  x="697.96" y="143.5" ></text>
+</g>
+<g >
+<title>std::__cxx11::basic_string&lt;char, std::char_traits&lt;char&gt;, std::allocator&lt;char&gt; &gt;::_M_construct (12,527,687 samples, 0.84%)</title><rect x="905.2" y="357" width="10.0" height="15.0" fill="rgb(214,43,10)" rx="2" ry="2" />
+<text  x="908.22" y="367.5" ></text>
+</g>
+<g >
+<title>vma_alloc_folio (26,106,368 samples, 1.76%)</title><rect x="684.6" y="197" width="20.7" height="15.0" fill="rgb(245,187,44)" rx="2" ry="2" />
+<text  x="687.62" y="207.5" ></text>
+</g>
+<g >
+<title>hrtimer_interrupt (13,073,918 samples, 0.88%)</title><rect x="541.1" y="149" width="10.3" height="15.0" fill="rgb(228,109,26)" rx="2" ry="2" />
+<text  x="544.06" y="159.5" ></text>
+</g>
+<g >
+<title>AVLMap::rotateRight (25,971,699 samples, 1.75%)</title><rect x="470.2" y="181" width="20.6" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="473.21" y="191.5" ></text>
+</g>
+<g >
+<title>benchmark::internal::BenchmarkInstance::Run (1,133,158,656 samples, 76.21%)</title><rect x="35.5" y="373" width="899.2" height="15.0" fill="rgb(228,110,26)" rx="2" ry="2" />
+<text  x="38.46" y="383.5" >benchmark::internal::BenchmarkInstance::Run</text>
+</g>
+<g >
+<title>__hrtimer_run_queues (13,073,918 samples, 0.88%)</title><rect x="541.1" y="133" width="10.3" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="544.06" y="143.5" ></text>
+</g>
+<g >
+<title>AVLMap::rebalance (37,169,745 samples, 2.50%)</title><rect x="490.8" y="197" width="29.5" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="493.82" y="207.5" >AV..</text>
+</g>
+<g >
+<title>asm_exc_page_fault (26,106,368 samples, 1.76%)</title><rect x="684.6" y="325" width="20.7" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="687.62" y="335.5" ></text>
+</g>
+<g >
+<title>virtual thunk to std::basic_ofstream&lt;char, std::char_traits&lt;char&gt; &gt;::~basic_ofstream (145,404,919 samples, 9.78%)</title><rect x="934.7" y="405" width="115.4" height="15.0" fill="rgb(215,50,12)" rx="2" ry="2" />
+<text  x="937.73" y="415.5" >virtual thunk ..</text>
+</g>
+<g >
+<title>__pte_alloc (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="293" width="8.8" height="15.0" fill="rgb(218,62,15)" rx="2" ry="2" />
+<text  x="1173.80" y="303.5" ></text>
+</g>
+<g >
+<title>handle_pte_fault (26,106,368 samples, 1.76%)</title><rect x="684.6" y="245" width="20.7" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="687.62" y="255.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (26,134,821 samples, 1.76%)</title><rect x="344.8" y="117" width="20.8" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="347.83" y="127.5" ></text>
+</g>
+<g >
+<title>handle_pte_fault (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="325" width="8.8" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="1173.80" y="335.5" ></text>
+</g>
+<g >
+<title>exc_page_fault (26,106,368 samples, 1.76%)</title><rect x="684.6" y="309" width="20.7" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="687.62" y="319.5" ></text>
+</g>
+<g >
+<title>pte_alloc_one (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="277" width="8.8" height="15.0" fill="rgb(252,217,51)" rx="2" ry="2" />
+<text  x="1173.80" y="287.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (577,217,711 samples, 38.82%)</title><rect x="144.6" y="261" width="458.1" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="147.57" y="271.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>handle_mm_fault (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="357" width="8.8" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="1173.80" y="367.5" ></text>
+</g>
+<g >
+<title>sysvec_apic_timer_interrupt (13,073,918 samples, 0.88%)</title><rect x="541.1" y="181" width="10.3" height="15.0" fill="rgb(220,69,16)" rx="2" ry="2" />
+<text  x="544.06" y="191.5" ></text>
+</g>
+<g >
+<title>std::locale::id::_M_id (24,117,032 samples, 1.62%)</title><rect x="1011.8" y="357" width="19.2" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="1014.82" y="367.5" ></text>
+</g>
+<g >
+<title>__handle_mm_fault (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="341" width="8.8" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="1173.80" y="351.5" ></text>
+</g>
+<g >
+<title>malloc (13,072,430 samples, 0.88%)</title><rect x="1141.3" y="421" width="10.4" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="1144.30" y="431.5" ></text>
+</g>
+<g >
+<title>memcg_account_kmem (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="197" width="8.8" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="1173.80" y="207.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (718,928,805 samples, 48.35%)</title><rect x="84.6" y="325" width="570.5" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="87.56" y="335.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>__sysvec_apic_timer_interrupt (13,073,918 samples, 0.88%)</title><rect x="541.1" y="165" width="10.3" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="544.06" y="175.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (53,215,254 samples, 3.58%)</title><rect x="323.3" y="133" width="42.3" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="326.34" y="143.5" >AVL..</text>
+</g>
+<g >
+<title>std::ostream&amp; std::ostream::_M_insert&lt;long long&gt; (36,140,079 samples, 2.43%)</title><rect x="734.1" y="341" width="28.6" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="737.05" y="351.5" >st..</text>
+</g>
+<g >
+<title>AVLMap::insertNode (13,320,741 samples, 0.90%)</title><rect x="665.6" y="341" width="10.6" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="668.64" y="351.5" ></text>
+</g>
+<g >
+<title>[unknown] (1,310,641,119 samples, 88.15%)</title><rect x="10.0" y="421" width="1040.1" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="431.5" >[unknown]</text>
+</g>
+<g >
+<title>__handle_mm_fault (26,106,368 samples, 1.76%)</title><rect x="684.6" y="261" width="20.7" height="15.0" fill="rgb(207,9,2)" rx="2" ry="2" />
+<text  x="687.62" y="271.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (253,762,081 samples, 17.07%)</title><rect x="228.8" y="181" width="201.3" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="231.75" y="191.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>operator new (13,537,294 samples, 0.91%)</title><rect x="365.6" y="133" width="10.7" height="15.0" fill="rgb(216,51,12)" rx="2" ry="2" />
+<text  x="368.57" y="143.5" ></text>
+</g>
+<g >
+<title>AVLMap::rebalance (10,597,228 samples, 0.71%)</title><rect x="676.2" y="341" width="8.4" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="679.21" y="351.5" ></text>
+</g>
+<g >
+<title>handle_mm_fault (26,106,368 samples, 1.76%)</title><rect x="684.6" y="277" width="20.7" height="15.0" fill="rgb(234,135,32)" rx="2" ry="2" />
+<text  x="687.62" y="287.5" ></text>
+</g>
+<g >
+<title>cfree@GLIBC_2.2.5 (26,163,808 samples, 1.76%)</title><rect x="1120.5" y="421" width="20.8" height="15.0" fill="rgb(233,131,31)" rx="2" ry="2" />
+<text  x="1123.53" y="431.5" ></text>
+</g>
+<g >
+<title>do_user_addr_fault (26,106,368 samples, 1.76%)</title><rect x="684.6" y="293" width="20.7" height="15.0" fill="rgb(228,108,25)" rx="2" ry="2" />
+<text  x="687.62" y="303.5" ></text>
+</g>
+<g >
+<title>trigger_load_balance (13,073,918 samples, 0.88%)</title><rect x="541.1" y="53" width="10.3" height="15.0" fill="rgb(228,108,26)" rx="2" ry="2" />
+<text  x="544.06" y="63.5" ></text>
+</g>
+<g >
+<title>AVLMap::insert (745,275,482 samples, 50.12%)</title><rect x="74.2" y="341" width="591.4" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="77.19" y="351.5" >AVLMap::insert</text>
+</g>
+<g >
+<title>benchmark::internal::BenchmarkRunner::DoNIterations (1,133,158,656 samples, 76.21%)</title><rect x="35.5" y="405" width="899.2" height="15.0" fill="rgb(238,153,36)" rx="2" ry="2" />
+<text  x="38.46" y="415.5" >benchmark::internal::BenchmarkRunner::DoNIterations</text>
+</g>
+<g >
+<title>asm_exc_page_fault (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="405" width="8.8" height="15.0" fill="rgb(225,93,22)" rx="2" ry="2" />
+<text  x="1173.80" y="415.5" ></text>
+</g>
+<g >
+<title>std::unique_ptr&lt;AVLNode, std::default_delete&lt;AVLNode&gt; &gt;::~unique_ptr (24,487,220 samples, 1.65%)</title><rect x="772.3" y="325" width="19.4" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="775.31" y="335.5" ></text>
+</g>
+<g >
+<title>AVLMap::rotateRight (14,067,378 samples, 0.95%)</title><rect x="386.7" y="149" width="11.1" height="15.0" fill="rgb(224,89,21)" rx="2" ry="2" />
+<text  x="389.68" y="159.5" ></text>
+</g>
+<g >
+<title>clear_page_erms (13,031,484 samples, 0.88%)</title><rect x="684.6" y="133" width="10.4" height="15.0" fill="rgb(229,113,27)" rx="2" ry="2" />
+<text  x="687.62" y="143.5" ></text>
+</g>
+<g >
+<title>save_latencies_to_csv (12,065,532 samples, 0.81%)</title><rect x="705.3" y="341" width="9.6" height="15.0" fill="rgb(227,102,24)" rx="2" ry="2" />
+<text  x="708.34" y="351.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (629,402,012 samples, 42.33%)</title><rect x="144.6" y="293" width="499.5" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="147.57" y="303.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>AVLMap::insertNode (524,992,355 samples, 35.31%)</title><rect x="155.0" y="245" width="416.7" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="158.03" y="255.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>AVLMap::insertNode (486,431,889 samples, 32.71%)</title><rect x="165.4" y="229" width="386.0" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="168.41" y="239.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>update_process_times (13,073,918 samples, 0.88%)</title><rect x="541.1" y="85" width="10.3" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="544.06" y="95.5" ></text>
+</g>
+<g >
+<title>dl_main (7,602,938 samples, 0.51%)</title><rect x="19.6" y="389" width="6.0" height="15.0" fill="rgb(236,145,34)" rx="2" ry="2" />
+<text  x="22.56" y="399.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (420,867,095 samples, 28.31%)</title><rect x="186.3" y="213" width="334.0" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="189.32" y="223.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>[unknown] (12,051,736 samples, 0.81%)</title><rect x="10.0" y="405" width="9.6" height="15.0" fill="rgb(210,24,5)" rx="2" ry="2" />
+<text  x="13.00" y="415.5" ></text>
+</g>
+<g >
+<title>[libstdc++.so.6.0.30] (24,670,182 samples, 1.66%)</title><rect x="963.4" y="357" width="19.6" height="15.0" fill="rgb(235,140,33)" rx="2" ry="2" />
+<text  x="966.43" y="367.5" ></text>
+</g>
+<g >
+<title>std::basic_streambuf&lt;char, std::char_traits&lt;char&gt; &gt;::xsputn (12,069,897 samples, 0.81%)</title><rect x="724.5" y="341" width="9.6" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="727.47" y="351.5" ></text>
+</g>
+<g >
+<title>_dl_sysdep_start (7,602,938 samples, 0.51%)</title><rect x="19.6" y="405" width="6.0" height="15.0" fill="rgb(234,137,32)" rx="2" ry="2" />
+<text  x="22.56" y="415.5" ></text>
+</g>
+<g >
+<title>benchmark::internal::(anonymous namespace)::RunInThread (1,133,158,656 samples, 76.21%)</title><rect x="35.5" y="389" width="899.2" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="38.46" y="399.5" >benchmark::internal::(anonymous namespace)::RunInThread</text>
+</g>
+<g >
+<title>AVLMap::insertNode (356,768,730 samples, 23.99%)</title><rect x="207.7" y="197" width="283.1" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="210.69" y="207.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>AVLMap::rebalance (50,490,434 samples, 3.40%)</title><rect x="430.1" y="181" width="40.1" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="433.14" y="191.5" >AVL..</text>
+</g>
+<g >
+<title>std::codecvt&lt;char, char, __mbstate_t&gt;::do_always_noconv (12,053,132 samples, 0.81%)</title><rect x="1161.2" y="421" width="9.6" height="15.0" fill="rgb(211,31,7)" rx="2" ry="2" />
+<text  x="1164.23" y="431.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (602,345,530 samples, 40.51%)</title><rect x="144.6" y="277" width="478.0" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="147.57" y="287.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>std::chrono::_V2::system_clock::now (24,653,665 samples, 1.66%)</title><rect x="915.2" y="357" width="19.5" height="15.0" fill="rgb(224,91,21)" rx="2" ry="2" />
+<text  x="918.16" y="367.5" ></text>
+</g>
+<g >
+<title>tick_nohz_highres_handler (13,073,918 samples, 0.88%)</title><rect x="541.1" y="117" width="10.3" height="15.0" fill="rgb(215,50,11)" rx="2" ry="2" />
+<text  x="544.06" y="127.5" ></text>
+</g>
+<g >
+<title>sysmalloc_mmap.constprop.0 (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="421" width="8.8" height="15.0" fill="rgb(227,101,24)" rx="2" ry="2" />
+<text  x="1173.80" y="431.5" ></text>
+</g>
+<g >
+<title>do_anonymous_page (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="309" width="8.8" height="15.0" fill="rgb(238,155,37)" rx="2" ry="2" />
+<text  x="1173.80" y="319.5" ></text>
+</g>
+<g >
+<title>alloc_pages_mpol (26,106,368 samples, 1.76%)</title><rect x="684.6" y="181" width="20.7" height="15.0" fill="rgb(254,227,54)" rx="2" ry="2" />
+<text  x="687.62" y="191.5" ></text>
+</g>
+<g >
+<title>tick_sched_handle (13,073,918 samples, 0.88%)</title><rect x="541.1" y="101" width="10.3" height="15.0" fill="rgb(219,68,16)" rx="2" ry="2" />
+<text  x="544.06" y="111.5" ></text>
+</g>
+<g >
+<title>__alloc_pages (11,082,063 samples, 0.75%)</title><rect x="1170.8" y="229" width="8.8" height="15.0" fill="rgb(233,129,30)" rx="2" ry="2" />
+<text  x="1173.80" y="239.5" ></text>
+</g>
+<g >
+<title>unlink_chunk.constprop.0 (13,111,643 samples, 0.88%)</title><rect x="1179.6" y="421" width="10.4" height="15.0" fill="rgb(222,80,19)" rx="2" ry="2" />
+<text  x="1182.59" y="431.5" ></text>
+</g>
+<g >
+<title>all (1,486,899,364 samples, 100%)</title><rect x="10.0" y="453" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="463.5" ></text>
+</g>
+<g >
+<title>AVLMap::insertNode (160,799,016 samples, 10.81%)</title><rect x="270.2" y="165" width="127.6" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="273.24" y="175.5" >AVLMap::insertNode</text>
+</g>
+<g >
+<title>std::unique_ptr&lt;AVLNode, std::default_delete&lt;AVLNode&gt; &gt;::~unique_ptr (24,487,220 samples, 1.65%)</title><rect x="772.3" y="341" width="19.4" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="775.31" y="351.5" ></text>
+</g>
+</g>
+</svg>
