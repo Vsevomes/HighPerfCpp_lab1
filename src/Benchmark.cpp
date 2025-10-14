@@ -84,7 +84,7 @@ static void BM_Insert_Ascending(benchmark::State& state) {
     save_latencies_to_csv(filename, latencies);
   }
 }
-BENCHMARK(BM_Insert_Ascending)->RangeMultiplier(2)->Range(1024, 16384)->Iterations(100);
+BENCHMARK(BM_Insert_Ascending)->Arg(16384)->Iterations(100);
 
 static void BM_Insert_Random(benchmark::State& state) {
   const int N = static_cast<int>(state.range(0));
@@ -107,7 +107,7 @@ static void BM_Insert_Random(benchmark::State& state) {
     save_latencies_to_csv(filename, latencies);
   }
 }
-BENCHMARK(BM_Insert_Random)->RangeMultiplier(2)->Range(1024, 16384)->Iterations(100);
+BENCHMARK(BM_Insert_Random)->Arg(16384)->Iterations(100);
 
 static void BM_Insert_Balanced(benchmark::State& state) {
   const int N = static_cast<int>(state.range(0));
@@ -130,34 +130,7 @@ static void BM_Insert_Balanced(benchmark::State& state) {
     save_latencies_to_csv(filename, latencies);
   }
 }
-BENCHMARK(BM_Insert_Balanced)->RangeMultiplier(2)->Range(1024, 16384)->Iterations(100);
-
-// ======================================================================= //
-// =========================== SINGLE INSERT ============================= //
-// ======================================================================= //
-
-static void BM_Insert(benchmark::State& state) {
-  const int N = static_cast<int>(state.range(0));
-  auto data = generate_data(N, "random");
-  AVLMap tree;
-  for (int x : data) tree.insert(x, std::to_string(x));
-
-  std::vector<long long> latencies; 
-
-  for (auto _ : state) {
-    auto start = std::chrono::high_resolution_clock::now();
-    tree.insert(N, "test");
-    auto end = std::chrono::high_resolution_clock::now();
-    latencies.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
-    tree.erase(N);
-  }
-
-  if (!latencies.empty()) {
-    std::string filename = "../plots/insert_latencies_single_" + std::to_string(N) + ".csv";
-    save_latencies_to_csv(filename, latencies);
-  }
-}
-BENCHMARK(BM_Insert)->RangeMultiplier(2)->Range(1024, 16384)->Iterations(100000);
+BENCHMARK(BM_Insert_Balanced)->Arg(16384)->Iterations(100);
 
 // ======================================================================= //
 // ================================ FIND ================================= //
@@ -183,7 +156,7 @@ static void BM_Find(benchmark::State& state) {
     save_latencies_to_csv(filename, latencies);
   }
 }
-BENCHMARK(BM_Find)->RangeMultiplier(2)->Range(1024, 16384)->Iterations(100000);
+BENCHMARK(BM_Find)->Arg(16384)->Iterations(100000);
 
 // ======================================================================= //
 // ================================ ERASE ================================ //
@@ -210,4 +183,4 @@ static void BM_Erase(benchmark::State& state) {
     save_latencies_to_csv(filename, latencies);
   }
 }
-BENCHMARK(BM_Erase)->RangeMultiplier(2)->Range(1024, 16384)->Iterations(100000);
+BENCHMARK(BM_Erase)->Arg(16384)->Iterations(100000);
